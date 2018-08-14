@@ -4,7 +4,7 @@
 #define NODE_IS_BATTERY_POWERED
 //#define NODE_HAS_DS18B20_ATTACHED
 //#define NODE_HAS_DHT22_ATTACHED
-#define NODE_HAS_BH1750_ATTACHED
+//#define NODE_HAS_BH1750_ATTACHED
 #define NODE_HAS_BMP180_ATTACHED
 //#define NODE_HAS_MOTION_ATTACHED
 
@@ -55,7 +55,7 @@ MyMessage msgTemp(CHILD_ID_TEMP, V_TEMP);
 DHT dht;
 #endif
 
-#if defined(NODE_HAS_DS18B20_ATTACHED) || defined(NODE_HAS_DHT22_ATTACHED)
+#if defined(NODE_HAS_DS18B20_ATTACHED) || defined(NODE_HAS_DHT22_ATTACHED) || defined(NODE_HAS_BMP180_ATTACHED)
 bool metric = true;
 #endif
 
@@ -96,10 +96,12 @@ int batterySkip = 0;
 #include <Adafruit_BMP085.h>
 #define BARO_CHILD 1
 #define TEMP_CHILD 0
+uint8_t nNoUpdatesTempBMP180;
 const float ALTITUDE = 520; // <-- adapt this value to your own location's altitude.
 
 // Sleep time between reads (in seconds). Do not change this value as the forecast algorithm needs a sample every minute.
 const unsigned long SLEEP_TIME = 60000; 
+static const uint8_t BMP_FORCE_UPDATE_N_READS = 5;
 
 const char *weather[] = { "stable", "sunny", "cloudy", "unstable", "thunderstorm", "unknown" };
 enum FORECAST
@@ -133,7 +135,6 @@ float pressureAvg;
 float pressureAvg2;
 
 float dP_dt;
-bool metric;
 MyMessage tempMsg(TEMP_CHILD, V_TEMP);
 MyMessage pressureMsg(BARO_CHILD, V_PRESSURE);
 MyMessage forecastMsg(BARO_CHILD, V_FORECAST);
@@ -151,7 +152,7 @@ void before()
 void presentation()  
 { 
   // Send the sketch version information to the gateway
-  sendSketchInfo("TestSensorBoard - NodeTest", "1.1");
+  sendSketchInfo("TestBoard BMP180 - OTA", "1.2");
 
 #ifdef NODE_HAS_DS18B20_ATTACHED
   // Fetch the number of attached temperature sensors  
@@ -172,7 +173,18 @@ void presentation()
   present(CHILD_ID_LIGHT, S_LIGHT_LEVEL);
 #endif
 
-#if defined(NODE_HAS_DS18B20_ATTACHED) || defined(NODE_HAS_DHT22_ATTACHED)
+#ifdef NODE_HAS_BMP180_ATTACHED
+  if (!bmp.begin()) 
+  {
+    Serial.println("Could not find a valid BMP085 sensor, check wiring!");
+    while (1) {}
+  }
+
+  present(BARO_CHILD, S_BARO);
+  present(TEMP_CHILD, S_TEMP);
+#endif
+
+#if defined(NODE_HAS_DS18B20_ATTACHED) || defined(NODE_HAS_DHT22_ATTACHED) || defined(NODE_HAS_BMP180_ATTACHED)
   metric = getControllerConfig().isMetric;
 #endif
 }
@@ -279,8 +291,14 @@ void loop()
 #endif
 
 #ifdef NODE_HAS_BH1750_ATTACHED
+  lightSensor.configure(BH1750_ONE_TIME_HIGH_RES_MODE);
+  delay(500); // Allow some time
   uint16_t lux = lightSensor.readLightLevel();// Get Lux value
-  Serial.println(lux);
+  #ifdef MY_DEBUG
+    Serial.print("Light: ");
+    Serial.print(lux);
+    Serial.println(" lx");
+  #endif
   if (lux != lastlux || noLightUpdate == FORCE_UPDATE_N_READS) {
       send(msgLight.set(lux));
       lastlux = lux;
@@ -316,10 +334,13 @@ void loop()
   Serial.println(weather[forecast]);
 #endif
 
-  if (temperature != lastTemp) 
+  if (temperature != lastTemp || nNoUpdatesTempBMP180 == BMP_FORCE_UPDATE_N_READS)
   {
     send(tempMsg.set(temperature, 1));
     lastTemp = temperature;
+    nNoUpdatesTempBMP180 = 0;
+  } else {
+    nNoUpdatesTempBMP180++;
   }
 
   if (pressure != lastPressure) 
@@ -346,10 +367,6 @@ void batM() //The battery calculations
 {
   // Battery monitoring reading
   int sensorValue = analogRead(BATTERY_SENSE_PIN);
-
-#ifdef MY_DEBUG
-    Serial.println(sensorValue);
-#endif
 
   int batteryPcnt = sensorValue / 10;
 
